@@ -1,0 +1,781 @@
+---
+title: "Final project: ARIMAX Model for Gasoline Consumption"
+author: "Berta Pla i Casamitjana and Fèlix Real Fraxedas"
+date: "May 2023"
+output:
+  rmdformats::downcute:
+    self_contained: true
+    default_style: "light"
+    downcute_theme: "default"
+    toc_depth: 3
+---
+
+```{=html}
+<style>
+#toc ul.nav li ul li {
+    display: none;
+    max-height: none;
+}
+
+#toc ul.nav li.active ul li  {
+    display: block;
+    max-height: none;
+}
+
+#toc ul.nav li ul li ul li {
+    max-height: none;
+    display: none !important;
+}
+
+#toc ul.nav li ul li.active ul li {
+    max-height: none;
+    display: block !important;
+}
+</style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+#################Validation#################################
+validation=function(model,dades){
+  s=frequency(get(model$series))
+  resid=model$residuals
+  par(mfrow=c(2,2),mar=c(3,3,3,3))
+  #Residuals plot
+  plot(resid,main="Residuals")
+  abline(h=0)
+  abline(h=c(-3*sd(resid),3*sd(resid)),lty=3,col=4)
+  #Square Root of absolute values of residuals (Homocedasticity)
+  scatter.smooth(sqrt(abs(resid)),main="Square Root of Absolute residuals",
+                 lpars=list(col=2))
+  
+  #Normal plot of residuals
+  qqnorm(resid)
+  qqline(resid,col=2,lwd=2)
+  
+  ##Histogram of residuals with normal curve
+  hist(resid,breaks=20,freq=FALSE)
+  curve(dnorm(x,mean=mean(resid),sd=sd(resid)),col=2,add=T)
+  
+  
+  #ACF & PACF of residuals
+  par(mfrow=c(1,2))
+  acf(resid,ylim=c(-1,1),lag.max=60,col=c(2,rep(1,s-1)),lwd=1)
+  pacf(resid,ylim=c(-1,1),lag.max=60,col=c(rep(1,s-1),2),lwd=1)
+  par(mfrow=c(1,1))
+  
+  #ACF & PACF of square residuals 
+  par(mfrow=c(1,2))
+  acf(resid^2,ylim=c(-1,1),lag.max=60,col=c(2,rep(1,s-1)),lwd=1)
+  pacf(resid^2,ylim=c(-1,1),lag.max=60,col=c(rep(1,s-1),2),lwd=1)
+  par(mfrow=c(1,1))
+  
+  #Ljung-Box p-values
+  par(mar=c(2,2,1,1))
+  tsdiag(model,gof.lag=7*s)
+  cat("\n--------------------------------------------------------------------\n")
+  print(model)
+  
+  #Stationary and Invertible
+  cat("\nModul of AR Characteristic polynomial Roots: ", 
+      Mod(polyroot(c(1,-model$model$phi))),"\n")
+  cat("\nModul of MA Characteristic polynomial Roots: ",
+      Mod(polyroot(c(1,model$model$theta))),"\n")
+  
+  #Model expressed as an MA infinity (psi-weights)
+  psis=ARMAtoMA(ar=model$model$phi,ma=model$model$theta,lag.max=36)
+  names(psis)=paste("psi",1:36)
+  cat("\nPsi-weights (MA(inf))\n")
+  cat("\n--------------------\n")
+  print(psis[1:20])
+  
+  #Model expressed as an AR infinity (pi-weights)
+  pis=-ARMAtoMA(ar=-model$model$theta,ma=-model$model$phi,lag.max=36)
+  names(pis)=paste("pi",1:36)
+  cat("\nPi-weights (AR(inf))\n")
+  cat("\n--------------------\n")
+  print(pis[1:20])
+  
+  ## Add here complementary tests (use with caution!)
+  ##---------------------------------------------------------
+  cat("\nNormality Tests\n")
+  cat("\n--------------------\n")
+ 
+  ##Shapiro-Wilks Normality test
+  print(shapiro.test(resid(model)))
+
+  suppressMessages(require(nortest,quietly=TRUE,warn.conflicts=FALSE))
+  ##Anderson-Darling test
+  print(ad.test(resid(model)))
+  
+  suppressMessages(require(tseries,quietly=TRUE,warn.conflicts=FALSE))
+  ##Jarque-Bera test
+  print(jarque.bera.test(resid(model)))
+  
+  cat("\nHomoscedasticity Test\n")
+  cat("\n--------------------\n")
+  suppressMessages(require(lmtest,quietly=TRUE,warn.conflicts=FALSE))
+  ##Breusch-Pagan test
+  obs=get(model$series)
+  print(bptest(resid(model)~I(obs-resid(model))))
+  
+  cat("\nIndependence Tests\n")
+  cat("\n--------------------\n")
+  
+  ##Durbin-Watson test
+  print(dwtest(resid(model)~I(1:length(resid(model)))))
+  
+  ##Ljung-Box test
+  cat("\nLjung-Box test\n")
+  print(t(apply(matrix(c(1:4,(1:4)*s)),1,function(el) {
+    te=Box.test(resid(model),type="Ljung-Box",lag=el)
+    c(lag=(te$parameter),statistic=te$statistic[[1]],p.value=te$p.value)})))
+  
+
+  #Sample ACF vs. Teoric ACF
+  par(mfrow=c(2,2),mar=c(3,3,3,3))
+  acf(dades, ylim=c(-1,1) ,lag.max=36,main="Sample ACF")
+  
+  plot(ARMAacf(model$model$phi,model$model$theta,lag.max=36),ylim=c(-1,1), 
+       type="h",xlab="Lag",  ylab="", main="ACF Teoric")
+  abline(h=0)
+  
+  #Sample PACF vs. Teoric PACF
+  pacf(dades, ylim=c(-1,1) ,lag.max=36,main="Sample PACF")
+  
+  plot(ARMAacf(model$model$phi,model$model$theta,lag.max=36, pacf=T),ylim=c(-1,1),
+       type="h", xlab="Lag", ylab="", main="PACF Teoric")
+  abline(h=0)
+  par(mfrow=c(1,1))
+}
+################# Fi Validation #################################
+```
+
+
+# Introduction
+
+This is the final project of the Time Series course of the Master's Degree in Statistics and Operations Research. This project aims to apply the Box-Jenkins ARIMA methodology, including extensions for treatment of calendar effects and outliers, to the analysis and prediction of a chosen “real time series”. Summarizing, it will consist in applying all the knowledge that we have acquired during the first part of the course.
+
+In our case, we decided to choose the time series about the Gasoline consumption in Spain, with data from Ministerio de Fomento. It is an interesting Time Series, as the gasoline consumption will likely have stational components (in summer people tend to travel more) and also calendar effects (Easter, for example) or outliers.
+
+We have loaded the function $\texttt{validation}$ that has been used throughout the course (we have omitted the chunk).
+
+As always, the first step is to load and take a first look at the data:
+
+```{r}
+setwd(".")
+serie=window(ts(read.table("gasolina.dat"),start=1993,freq=12))
+```
+
+```{r}
+plot(serie, main="Gasoline consumption in Spain", ylab="Thousands of tons")
+abline(v=1993:2020,lty=3,col=4)
+```
+
+# Identification
+
+This first section will be divided into two parts:
+
+1. Making the series stationary, using different transformations.
+2. Analyse the ACF and PACF of the stationary series to identify possible models, as well as seeing if there are possible calendar effects or outliers.
+
+## Making the series stationary
+
+The first step will be to check if the variance is constant throughout the series. In the base plot of the series we have seen before, we can already guess that the years in which the mean is higher, so is the variance, but let's check it by making a mean-variance plot:
+
+```{r}
+m = apply(matrix(serie, nr=12), 2, mean)
+v = apply(matrix(serie, nr=12), 2, var)
+plot(m, v, xlab="Medias anuales", ylab="Varianzas anuales", main="serie")
+abline(lm(v~m), col=2, lty=3, lwd=2)
+```
+
+With this plot we confirm that the variance is not constant (higher mean implies higher variance), so a first transformation is clear to do: a logarithm.
+
+```{r}
+lnserie <- log(serie)
+plot(lnserie)
+```
+
+Let's repeat the mean-variance plot to check we have eliminated the non-constant variance:
+
+```{r}
+m = apply(matrix(lnserie, nr=12), 2, mean)
+v = apply(matrix(lnserie, nr=12), 2, var)
+plot(m, v, xlab="Medias anuales", ylab="Varianzas anuales", main="serie")
+abline(lm(v~m), col=2, lty=3, lwd=2)
+```
+Now that we have a constant variance, let's look at another clear point we have seen in the initial plot: the seasonality. There is a clear yearly seasonality, so let's check it with a $\texttt{monthplot}$:
+
+```{r}
+monthplot(lnserie)
+```
+
+As we could expect, the gasoline consumption is higher in the summer months (when people tend to go on holiday). We confirm the yearly seasonality, so we perform a 12-order differentiation and plot the resulting series:
+
+```{r}
+d12lnserie=diff(lnserie,12)
+plot(d12lnserie)
+abline(h=0)
+abline(h=mean(d12lnserie),col=2)
+```
+
+In the previous plot, we see that the general mean of the transformed series is almost zero, but is not clearly constant already, so we can try a regular differentiation and see what we obtain:
+
+```{r}
+d1d12lnserie=diff(d12lnserie,1)
+plot(d1d12lnserie)
+abline(h=0)
+```
+
+Now the mean is clearly constant and equal to zero. However, there exists the possibility that we have artificially added variance (over-differentiated). For that reason, we have to compute the variances and see if that is the case:
+
+```{r}
+var(lnserie)
+var(d12lnserie)
+var(d1d12lnserie)
+```
+We see a slightly higher variance in the two times differentiated series, but as the difference is not that high and the series seems to have a better stationary structure in that way, we decide to keep the seasonal and regular differentiated series.
+
+```{r}
+data <- d1d12lnserie
+```
+
+## Identifying possible models by looking at the ACF/PACF structure
+
+Now that we have a stationary series, we can proceed to identify possible ARMA models that fit it. To do so, we will look at the ACF/PACF structure:
+
+```{r}
+par(mfrow=c(1,2))
+acf(data, ylim=c(-1,1), col=c(2,rep(1,11)),lwd=2,lag.max=72)
+pacf(data, ylim=c(-1,1), col=c(rep(1,11),2),lwd=2,lag.max=72)
+par(mfrow=c(1,1))
+```
+
+From the previous ACF/PACF plots, we identify these structures:
+
+- For the seasonal part, we see an $MA(1)$ structure (one non-null ACF lag in the seasonal part after the first one).
+- For the regular part, we can see an $ARMA(1,1)$ (if we consider both the ACF and PACF to decay slowly) or an $MA(1)$ structure (the ACF decreases faster than the PACF). We could also consider an $AR(4)$ structure, as there are 4 non-null lags on the PACF, but we will avoid using that large number of parameters.
+
+All in all, we will consider the models with the less parameters to make things easier and so, we will consider:
+
+- $ARMA(0,0,1)(0,0,1)_{12}$
+- $ARMA(1,0,1)(0,0,1)_{12}$
+
+# Estimation
+
+After transforming our series into a stationary one and identifying two possible models for the series, we do actually fit the models. We first try them including the mean, despite already knowing that we will probably will have to get rid of it (since we have seen that it is zero).
+
+```{r}
+(mod1=arima(data,order=c(0,0,1),seasonal=list(order=c(0,0,1),period=12)))
+(mod2=arima(data,order=c(1,0,1),seasonal=list(order=c(0,0,1),period=12)))
+```
+As we expected, we see that the intercepts are not significant (apart from being almost zero in both cases), so we fit the models without them and then we will check the significance of the coefficients by looking at the t-ratios:
+
+$$t_i = \frac{\phi_i}{sd(\phi_i)}$$
+
+which will indicate that the coefficient $\phi_i$ is significant if $|t_i| > 2$.
+
+```{r}
+(mod1=arima(lnserie,order=c(0,1,1),seasonal=list(order=c(0,1,1),period=12)))
+(mod2=arima(lnserie,order=c(1,1,1),seasonal=list(order=c(0,1,1),period=12)))
+```
+
+```{r}
+# Extract the estimated coefficients and covariance matrix
+coef_est <- mod1$coef
+cov_mat <- mod1$var.coef
+
+# Compute the t-ratios
+t_ratios_1 <- coef_est / sqrt(diag(cov_mat))
+
+# Print the results
+print(abs(t_ratios_1))
+```
+```{r}
+# Extract the estimated coefficients and covariance matrix
+coef_est <- mod2$coef
+cov_mat <- mod2$var.coef
+
+# Compute the t-ratios
+t_ratios_2 <- coef_est / sqrt(diag(cov_mat))
+
+# Print the results
+print(abs(t_ratios_2))
+```
+So, in both models, the coefficients are all significant. For the moment, we keep both models, the $ARMA(0,1,1)(0,1,1)_{12}$ and the $ARMA(1,1,1)(0,1,1)_{12}$, both fitting the logarithm of the original series.
+
+# Validation
+
+After having estimated both models, we will use the $\texttt{validate}$ function used throughout the course to see if the assumptions of the ARIMA model are fulfilled. We will check the following characteristics of the model:
+
+- Residuals should be normal with zero mean and constant variance
+- The residuals should be independent
+- We will check whether the models are causal and/or invertible
+- If the sample and theoretical ACF/PACF are similar
+
+## $ARMA(0,1,1)(0,1,1)_{12}$ model
+
+```{r}
+validation(mod1, d1d12lnserie)
+```
+
+For this first model we see:
+
+- We probably have outliers (at least 3 or 4 looking at Q-Q plot and histogram) that make the premises of the model not being fulfilled completely.
+- In the ACF/PACF of the square of residulas there are some non-null lags that confirm that the variance is not completely homogeneous, probably due to the previously mentioned outliers.
+- From the normality tests, we see that the only one that accepts it is the Anderson Darling test, which is not that sensitive to outliers.
+- In the test, homoscedasticity is accepted.
+- The independence of residuals is accepted in the Durbin Watson test, but not in the Ljung-Box, in which the p-values are below 0.05 from lag 9 onwards.
+- The sample and theoretical ACF/PACF are quite similar, it can be seen in the figures. Some adequacy measures are the log-likelihood, 610.97, the AIC, -1215.93 and $\sigma^2 =  0.001081$.
+
+Finally, we check whether the model is causal and/or invertible:
+
+- The proposed $ARMA(0,1,1)(0,1,1)_{12}$ model is found invertible since all of the roots of the regular MA-characteristic polynomial lie outside the unit circle (all with modul between 1.009607 and 1.480175, which is greater than one). Thus, the model can be represented as a convergent AR(∞)
+ expression with π-weights (useful for estimating point predictions).
+
+- The model is also causal/stationary; since all MA(q) models are stationary. Thus, the model can be represented as a convergent MA(∞) expression with ψ-weights (useful for estimating the variance of estimated point predictions).
+
+## $ARMA(1,1,1)(0,1,1)_{12}$ model
+
+```{r}
+validation(mod2, d1d12lnserie)
+```
+
+For this second model, we extract basically the same conclusions as in the first one. We also see very similar sample and theoretical ACF/PACF plots, with adequacy measures: log-likelihood, 613.46, the AIC, -1218.93 and $\sigma^2 =  0.001068$.
+
+Finally, we check whether the model is causal and/or invertible:
+
+- The proposed $ARMA(1,1,1)(0,1,1)_{12}$ model is found invertible since all of the roots of the regular MA-characteristic polynomial lie outside the unit circle (all with modul between 1.011001 and 1.665005, which is greater than one). Thus, the model can be represented as a convergent AR(∞)
+ expression with π-weights (useful for estimating point predictions).
+
+- The model is also causal/stationary; since the root of the seasonal AR-characteristic polynomial lies outside the unit circle (modul = 5.857139 greater than 1). Thus, the model can be represented as a convergent MA(∞) expression with ψ-weights(useful for estimating the variance of estimated point predictions).
+
+We see that all the ARMA model assumptions are not fulfilled completely, but for the moment we will accept the models as valid and later on we will treat calendar effects and outliers and see if we can improve the models.
+
+## Forecasting
+
+We have considered (for the moment) that both models are valid and fulfill the assumptions of an ARMA model. Now, we will see how the models perform on forecasting and select the best of them in that aspect. For that purpose, we will reserve the last 12 observations and do the following steps:
+
+- Check if the models are stable
+- Evaluate their capability of prediction
+- Compare the performance of both models and select the best for forecasting
+
+### Stability
+
+<blockquote>
+**Stability:**
+
+A time series is said to be stable if its statistical properties, such as mean, variance, and autocorrelation, remain constant or change only gradually over time.
+</blockquote>
+
+So, for an ARIMA model, stability ensures that the model produces accurate forecasts and reflects the underlying patterns of the time series data.
+
+In order to check the stability of the models, we will fit two models, one containing one month more in data than the other, and we will check that their properties are preserved. In particular, we will check that their parameters are similar in sign, magnitude and significance. As we have fitted our previous models without including the mean, we will do the same now.
+
+Note that we will reserve the last 12 observations of the time series in order to make long-term predictions with the models and be able to compare with real data.
+
+```{r}
+ultim = c(2018,12)
+pdq_1 = c(0,1,1)
+pdq_2 = c(1,1,1)
+PDQ = c(0,1,1)
+
+serie2=window(lnserie,end=ultim)
+serie1=window(lnserie,end=ultim+c(1,0))
+```
+
+For model 1:
+
+```{r}
+(mod1A=arima(serie1,order=pdq_1,seasonal=list(order=PDQ,period=12)))
+(mod1B=arima(serie2,order=pdq_1,seasonal=list(order=PDQ,period=12)))
+```
+The parameters seem to be preserved: magnitudes are similar, signs are the same and they are all significant. We will consider the model to be stable.
+
+Let's check for model 2:
+
+```{r}
+(mod2A=arima(serie1,order=pdq_2,seasonal=list(order=PDQ,period=12)))
+(mod2B=arima(serie2,order=pdq_2,seasonal=list(order=PDQ,period=12)))
+```
+Again, we see very similar parameters in both fitted models, so we consider model 2 to be stable too.
+
+### Forecasting performance
+
+We have already seen that both models seem to be stable. Now, we will try to select the best one for forecasting. To do so, we will compute long-term predictions for both of them (12 months ahead) and compare with the real time series to obtain some metrics to be able to compare both models.
+
+```{r}
+# Model 1
+pred1 = predict(mod1B,n.ahead=12)
+pr1 <- ts(c(tail(serie2,1),pred1$pred),start=ultim,freq=12)
+se1 <- ts(c(0,pred1$se),start=ultim,freq=12)
+
+tl1<-ts(exp(pr1-1.96*se1),start=ultim,freq=12)
+tu1<-ts(exp(pr1+1.96*se1),start=ultim,freq=12)
+pr1<-ts(exp(pr1),start=ultim,freq=12)
+
+# Model 2
+pred2 = predict(mod2B,n.ahead=12)
+pr2 <- ts(c(tail(serie2,1),pred2$pred),start=ultim,freq=12)
+se2 <- ts(c(0,pred2$se),start=ultim,freq=12)
+
+tl2<-ts(exp(pr2-1.96*se2),start=ultim,freq=12)
+tu2<-ts(exp(pr2+1.96*se2),start=ultim,freq=12)
+pr2<-ts(exp(pr2),start=ultim,freq=12)
+```
+
+```{r}
+ts.plot(serie,tl1,tu1,pr1,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2014,2020),ylim=c(300,600),type="o",main=paste("Model ARIMA(",paste(pdq_1,collapse=","),")(",paste(PDQ,collapse=","),")12",sep=""))
+abline(v=2014:2020,lty=3,col=4)
+
+ts.plot(serie,tl2,tu2,pr2,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(2014,2020),ylim=c(300,600),type="o",main=paste("Model ARIMA(",paste(pdq_2,collapse=","),")(",paste(PDQ,collapse=","),")12",sep=""))
+abline(v=2014:2020,lty=3,col=4)
+```
+We see that the predictions of both models look almost identical. However, as we are trying to select the best one for forecasting, we will extract some metrics about the predictions:
+
+```{r}
+obs=window(serie,start=ultim)
+
+mod1.RMSE=sqrt(sum((obs-pr1)^2)/12)
+mod1.MAE=sum(abs(obs-pr1))/12
+mod1.RMSPE=sqrt(sum(((obs-pr1)/obs)^2)/12)
+mod1.MAPE=sum(abs(obs-pr1)/obs)/12
+mod1.ML=sum(tu1-tl1)/12
+
+metrics1 <- data.frame("Model"=paste("ARIMA(",paste(pdq_1,collapse=","),")(",paste(PDQ,collapse=","),")12",sep=""),"RMSE"=mod1.RMSE,"MAE"=mod1.MAE,"RMSPE"=mod1.RMSPE,"MAPE"=mod1.MAPE,"Mean length"=mod1.ML)
+
+mod2.RMSE=sqrt(sum((obs-pr2)^2)/12)
+mod2.MAE=sum(abs(obs-pr2))/12
+mod2.RMSPE=sqrt(sum(((obs-pr2)/obs)^2)/12)
+mod2.MAPE=sum(abs(obs-pr2)/obs)/12
+mod2.ML=sum(tu2-tl2)/12
+
+metrics2 <- data.frame("Model"=paste("ARIMA(",paste(pdq_2,collapse=","),")(",paste(PDQ,collapse=","),")12",sep=""), "RMSE"=mod2.RMSE,"MAE"=mod2.MAE,"RMSPE"=mod2.RMSPE,"MAPE"=mod2.MAPE,"Mean length"=mod2.ML)
+
+metrics <- rbind(metrics1, metrics2)
+metrics
+```
+
+Although the metrics are very similar, we choose the $ARMA(1,1,1)(0,1,1)_{12}$ as the best one for prediction, as it has better RMSE, MAE, RMSPE and MAPE, despite having a little less precision (Mean Length of the intervals).
+
+```{r}
+mod = mod2A
+```
+
+
+# Predictions
+
+Now that we have selected the best model for forecasting, we are able to make predictions for the twelve months following the last observation available. That is, from January to December 2020.
+
+```{r}
+pred=predict(mod,n.ahead=12)
+pr<-ts(c(tail(lnserie,1),pred$pred),start=ultim+c(1,0),freq=12)
+se<-ts(c(0,pred$se),start=ultim+c(1,0),freq=12)
+
+#Intervals
+tl<-ts(exp(pr-1.96*se),start=ultim+c(1,0),freq=12)
+tu<-ts(exp(pr+1.96*se),start=ultim+c(1,0),freq=12)
+pr<-ts(exp(pr),start=ultim+c(1,0),freq=12)
+
+ts.plot(serie,tl,tu,pr,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(ultim[1]-2,ultim[1]+3),type="o",main="Model ARIMA(1,1,1)(0,1,1)12")
+abline(v=(ultim[1]-2):(ultim[1]+3),lty=3,col=4)
+```
+With the selected model, we would obtain these predictions, which we see are quite similar to the previous years.
+
+
+# Outlier treatment
+
+When we validated the models, we saw that some of the assumptions of ARIMA models were not completely fulfilled, probably due to the presence of outliers. We will now take them into consideration, in order to be able to improve the fitted models. The first step will be to check if calendar effects are significant or not and later on we will appply automatic detection of outliers.
+
+## Calendar effects
+
+Calendar effects refer to recurring patterns in time series data that are influenced by the calendar. In our case, we will focus on the effect of trading days (we do not have the same number of weekends every month) and Easter (which does not always fall on the same dates of the year). We could also account for more specific effects related to the topic of our particular time series, but as we do not have more information about the effects on the gasoline consumption, we have decided not to include them. We will use the prepared script **CalendarEffects.r**, which we have already been using during the course.
+
+```{r}
+source("CalendarEffects.r")
+data=c(start(lnserie)[1],start(lnserie)[2], length(lnserie))
+
+wTradDays=Wtrad(data)
+wEast=Weaster(data)
+```
+
+After setting the calendar effects, we fit the four possible models: the original one (the one that we have decided that worked best for prediction), one taking into account trading days, one taking into account the effect of Easter and one taking both effects into account.
+
+```{r}
+# Original model
+(mod2=arima(lnserie,order=pdq_2,seasonal=list(order=PDQ,period=12)))
+t(round(mod2$coef/sqrt(diag(mod2$var.coef)),2))
+
+# Model with trading days
+(mod2TD=arima(lnserie,order=pdq_2,seasonal=list(order=PDQ,period=12),xreg=wTradDays))
+t(round(mod2TD$coef/sqrt(diag(mod2TD$var.coef)),2))
+
+# Model with Easter effects
+(mod2Ea=arima(lnserie,order=pdq_2,seasonal=list(order=PDQ,period=12),xreg=wEast))
+t(round(mod2Ea$coef/sqrt(diag(mod2Ea$var.coef)),2))
+
+# Model with both trading days and Easter effects
+(mod2EC=arima(lnserie,order=pdq_2,seasonal=list(order=PDQ,period=12),xreg=data.frame(wTradDays,wEast)))
+t(round(mod2EC$coef/sqrt(diag(mod2EC$var.coef)),2))
+```
+
+We see that calendar effects are significant. In all of the cases we obtain a ratio of the absolute values of the coefficients and the standard errors greater than 2 for the calendar effects. However, we see that for the model with both effects, the ratio for the AR(1) coefficient is near 1. We decide to do the same with the other model that we fitted previously (the $ARIMA(0,1,1)(0,1,1)_{12}$) to see if we avoid this effect.
+
+```{r}
+# Original model
+(mod1=arima(lnserie,order=pdq_1,seasonal=list(order=PDQ,period=12)))
+t(round(mod1$coef/sqrt(diag(mod1$var.coef)),2))
+
+# Model with trading days
+(mod1TD=arima(lnserie,order=pdq_1,seasonal=list(order=PDQ,period=12),xreg=wTradDays))
+t(round(mod1TD$coef/sqrt(diag(mod1TD$var.coef)),2))
+
+# Model with Easter effects
+(mod1Ea=arima(lnserie,order=pdq_1,seasonal=list(order=PDQ,period=12),xreg=wEast))
+t(round(mod1Ea$coef/sqrt(diag(mod1Ea$var.coef)),2))
+
+# Model with both trading days and Easter effects
+(mod1EC=arima(lnserie,order=pdq_1,seasonal=list(order=PDQ,period=12),xreg=data.frame(wTradDays,wEast)))
+t(round(mod1EC$coef/sqrt(diag(mod1EC$var.coef)),2))
+```
+
+With this model, we obtain significance in all of the coefficients and also on the Calendar Effects. We decide to stay with $mod1EC$, the model that takes into account both effects (trading days and Easter).
+
+After that, we correct the original series with both effects:
+
+```{r}
+EfecTD=coef(mod1EC)["wTradDays"]*wTradDays
+EfecSS=coef(mod1EC)["wEast"]*wEast
+lnserieEC=lnserie-EfecTD-EfecSS
+
+d1d12lnserieEC <- diff(diff(lnserieEC, 12), 1)
+```
+
+And we see the ACF/PACF structure to see if the previously selected model still makes sense:
+
+```{r}
+par(mfrow=c(1,2))
+acf(d1d12lnserieEC,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2)
+pacf(d1d12lnserieEC,ylim=c(-1,1),lag.max=72,col=c(rep(1,11),2),lwd=2)
+par(mfrow=c(1,1))
+```
+
+From the ACF/PACF structure of the corrected series, we see that the $MA(1)$ structure for both the normal and the seasonal part makes sense. We then continue with this model: 
+
+```{r}
+(mod1EC=arima(lnserie,order=c(0,1,1),seasonal=list(order=c(0,1,1),period=12),xreg=data.frame(wTradDays,wEast)))
+```
+
+After seeing that both the effects of Easter and trading days are significant, we plot their effects and we compare the original series with the one taking them into account:
+
+```{r}
+plot(EfecTD + EfecSS)
+```
+
+```{r}
+serieEC=exp(lnserieEC)
+plot(serie,xlim=c(2014,2019), ylim=c(300,600),type="o")
+lines(serieEC,col=2,type="o")
+abline(v=2014:2019,lty=3,col=4)
+```
+We do not see big differences, but in some points they are noticeable. We have decided to go on with the $ARIMA(0,1,1)(0,1,1)_{12}$ model, but before treating the outliers, we will perform a validation after having treated the calendar effects, to see if we have improved the model already:
+
+```{r}
+validation(mod1EC, d1d12lnserieEC)
+```
+
+With respect to the model without the calendar effects treatment we see:
+
+- The effects that were due to outliers are still noticeable (heavy tails on the Q-Q and histogram that avoid normality, for example).
+- The residuals are now independent: the main change is in the Ljung-Box test. However, this may change when we remove the outliers, as it can be a side effect of them.
+
+## Outliers
+
+After having treated the calendar effects, we will now apply automatic detection of outliers. As we have done during the course, we will use the **atipics2.r** script. We will apply it to the model we have fitted taking into account the calendar effects, as it is the one that has worked the best so far.
+
+```{r}
+source("atipics2.r")
+```
+
+```{r}
+mod.atip=outdetec(mod1EC,dif=c(1,12),crit=2.75,LS=T)
+
+#Estimated residual variance after outliers detection and treatment
+mod.atip$sigma
+```
+We will see which outliers we have detected and interpret them briefly:
+
+```{r}
+atipics=mod.atip$atip[order(mod.atip$atip[,1]),]
+meses=c("Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic")
+
+data.frame(atipics,Fecha=paste(meses[(atipics[,1]-1)%%12+1],start(lnserie)[1]+((atipics[,1]-1)%/%12)),perc.Obs=exp(atipics[,3])*100)
+```
+
+From the results above, we see that our dataset has the three types of outliers which we have seen during the course: AO, LS and TC. In summary, an Additive Outlier (AO) is a single unusual spike, a Level Shift (LS) is a sudden change in the average value and a Transitory Change (TC) is a temporary spike that eventually goes away. We find these many cases of each type of outlier:
+
+```{r}
+table(atipics$type_detected)
+```
+
+We can interpret some of the results above, for instance:
+
+- The 93rd observation is a level shift (LS) type of outlier. This coincides with a good economic period for Spain. Economic growth leads to increased industrial, commercial, and transportation activities, resulting in higher fuel demand. We find the opposite level shift in mid-2012, with a level shift in which the consumption of gasoline decreases. This 232nd observation coincides with the year of the second economic crisis, and the effect takes place from that moment on.
+
+- The 24th observation is an additive outlier (AO) that occurs in December 1994. As we learned during the course. this type of outlier is only noticed at that specific date. We have not been able to explain what may have caused it. However, since we are working with a log-transformed series and we know that, for that significant observation, $\texttt{W_coeff} = -0.155$, if we apply the exponential function and multiply the result by 100%, we get the percentage relative variation effect. For this case, we know that whatever occurred in December 1994, caused the consumption of gasoline to only be $85.62\%$ of what would have been without the presence of this atypical phenomenon. This is an effect of a $14.38\%$ decrease.
+
+- In October of the year 2000 (observation number 94), we observe a transitory change (TC) type of outlier with a significant statistic's value |6.76|>2. Its magnitude is given by $\texttt{W_coeff} = -0.1548$ in the log-scale, which means that a decrease in the gasoline consumption in Spain is observed with respect to what would have happened if this atypical had not taken place. Again, we have not been able to detect any factor that caused such fluctuation, although in that same month there was a deadly terrorist attack by ETA involving a car bomb and ending in more than 60 injured civilians. However, we would not associate this with a transitory change.
+
+Another interesting thing to see is the comparison between the original and the linearized series, where we should especially see level shifts and transitory changes:
+
+```{r}
+lnserie.lin=lineal(lnserie,mod.atip$atip)
+serie.lin=exp(lnserie.lin)
+
+plot(serie.lin,col=2)
+lines(serie)
+```
+
+Finally, we see the effect of the outliers:
+
+```{r}
+plot(lnserie-lnserie.lin)
+```
+
+As we have done in the calendar effects treatment, we have to check if the currently used model is also suitable for the linearlized series. For that purpose, we plot the ACF/PACF structure of the linearlized series:
+
+```{r}
+d1d12lnserie.lin=diff(diff(lnserie.lin,12))
+par(mfrow=c(1,2))
+acf(d1d12lnserie.lin,ylim=c(-1,1),lag.max=72,col=c(2,rep(1,11)),lwd=2)
+pacf(d1d12lnserie.lin,ylim=c(-1,1),lag.max=72,col=c(rep(1,11),2),lwd=2)
+par(mfrow=c(1,1))
+```
+
+We see that the model $ARIMA(0,1,1)(0,1,1)_{12}$ is still consistent with the ACF/PACF structure of the linearized series, so we fit it, taking into account also the calendar effects:
+
+```{r}
+(mod.lin=arima(lnserie.lin,order=c(0,1,1),seasonal=list(order=c(0,1,1),period=12), xreg=data.frame(wTradDays,wEast)))
+```
+Finally, we have to validate this model:
+
+```{r}
+dades=d1d12lnserie.lin
+model=mod.lin
+validation(model,dades)
+```
+
+With respect to the original model we see that:
+
+- The heavy tails have almost been eliminated and now all the normality tests say that the residuals are normally distributed.
+- The ACF/PACF structure of the square of the residuals is now way better than in the original case (the first lags are all almost null), so there is a better homogeneity of the variance.
+- The independence of residuals is not being achieved either.
+- As before, the model is causal and invertible.
+- The theoretical and sample ACF/PACF structure are very similar. Goodness of fit measures: log-likelihood is 764.56, AIC is -1519.12 and $\sigma^2 = 0.0004146$.
+
+Despite not achieving all the assumptions of an ARIMA model, we will consider this linearized model as good and we will take it as our final model.
+
+## Forecasting
+
+With the last fitted linearlized model, we will once again perform predictions and compare them to the ones made with the classical ARIMA model. As before, we will first check the stability of the model:
+
+```{r}
+ultim = c(2018,12)
+pdq_1 = c(0,1,1)
+PDQ = c(0,1,1)
+
+serie2=window(lnserie.lin,end=ultim)
+serie1=window(lnserie.lin,end=ultim+c(1,0))
+
+wTradDays2=window(wTradDays,end=ultim)
+wEast2=window(wEast,end=ultim)
+```
+
+```{r}
+(mod.linA=arima(serie1,order=pdq_1,seasonal=list(order=PDQ,period=12), xreg=data.frame(wTradDays,wEast)))
+(mod.linB=arima(serie2,order=pdq_1,seasonal=list(order=PDQ,period=12), xreg=data.frame(wTradDays2,wEast2)))
+```
+We clearly see stability of the model (magnitude, sign and significance of coefficients). We will first perform predictions on the known data to compare the prediction results with the ones obtained for the original model:
+
+```{r}
+pred=predict(mod.linB,n.ahead=12,newxreg=window(cbind(wTradDays,wEast),start=c(ultim[1]+1,1)))
+predic=pred$pr
+pr.lin<-ts(c(tail(serie2,1),predic),start=ultim,freq=12)
+se.lin<-ts(c(0,pred$se),start=ultim,freq=12)
+
+#Intervals
+tl.lin<-ts(exp(pr.lin-1.96*se.lin),start=ultim,freq=12)
+tu.lin<-ts(exp(pr.lin+1.96*se.lin),start=ultim,freq=12)
+pr.lin<-ts(exp(pr.lin),start=ultim,freq=12)
+
+ts.plot(serie,tl.lin,tu.lin,pr.lin,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=ultim[1]+c(-3,2),type="o",main="Model ARIMA(0,1,1)(0,1,1)12+TD+Easter", ylim=c(300,600))
+abline(v=(ultim[1]-3):(ultim[1]+2),lty=3,col=4)
+```
+
+With a first glance, we can already see that predictions seem better. We will check the metrics:
+
+```{r}
+obs=window(serie,start=ultim)
+
+mod.RMSE=sqrt(sum((obs-pr.lin)^2)/12)
+mod.MAE=sum(abs(obs-pr.lin))/12
+mod.RMSPE=sqrt(sum(((obs-pr.lin)/obs)^2)/12)
+mod.MAPE=sum(abs(obs-pr.lin)/obs)/12
+mod.ML=sum(tu.lin-tl.lin)/12
+
+metrics_lin <- data.frame("Model"=paste("ARIMA(",paste(pdq_1,collapse=","),")(",paste(PDQ,collapse=","),")12 + CE + atipics",sep=""),"RMSE"=mod.RMSE,"MAE"=mod.MAE,"RMSPE"=mod.RMSPE,"MAPE"=mod.MAPE,"Mean length"=mod.ML)
+
+metrics <- rbind(metrics1, metrics_lin)
+metrics
+```
+
+We confirm that the predictions are way better now, substantially lowering all the performance metrics. 
+
+Now, just for completion, we will plot the long-term predictions of both the original model and the one corrected with calendar effects and outliers treatment (we will have to predict again the original ones as we did not do the original predictions with the model we ended up using):
+
+```{r}
+pred=predict(mod1A,n.ahead=12)
+pr<-ts(c(tail(lnserie,1),pred$pred),start=ultim+c(1,0),freq=12)
+se<-ts(c(0,pred$se),start=ultim+c(1,0),freq=12)
+
+#Intervals
+tl<-ts(exp(pr-1.96*se),start=ultim+c(1,0),freq=12)
+tu<-ts(exp(pr+1.96*se),start=ultim+c(1,0),freq=12)
+pr<-ts(exp(pr),start=ultim+c(1,0),freq=12)
+```
+
+```{r}
+pred=predict(mod.linA,n.ahead=12,newxreg=window(cbind(wTradDays,wEast)))
+pr.lin<-ts(c(tail(lnserie,1),pred$pred),start=ultim+c(1,0),freq=12)
+se.lin<-ts(c(0,pred$se),start=ultim+c(1,0),freq=12)
+
+#Intervals
+tl.lin<-ts(exp(pr.lin-1.96*se.lin),start=ultim+c(1,0),freq=12)
+tu.lin<-ts(exp(pr.lin+1.96*se.lin),start=ultim+c(1,0),freq=12)
+pr.lin<-ts(exp(pr.lin),start=ultim+c(1,0),freq=12)
+```
+
+```{r}
+par(mfrow=c(1,2))
+ts.plot(serie,tl,tu,pr,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(ultim[1]-2,ultim[1]+3),type="o",main="Model ARIMA(0,1,1)(0,1,1)12",ylim=c(300,600))
+abline(v=(ultim[1]-2):(ultim[1]+3),lty=3,col=4)
+ts.plot(serie,tl.lin,tu.lin,pr.lin,lty=c(1,2,2,1),col=c(1,4,4,2),xlim=c(ultim[1]-2,ultim[1]+3),type="o",main="Model ARIMA(0,1,1)(0,1,1)12 + CE + out",ylim=c(300,600))
+abline(v=(ultim[1]-2):(ultim[1]+3),lty=3,col=4)
+```
+
+In conclusion, the two graphs presented above clearly illustrate the significant impact of treating calendar effects and outliers in the gasoline dataset. By applying appropriate adjustments to account for these factors, we are able to enhance the accuracy and reliability of our predictions.
+
+# Conclusions
+
+During this assignment, we have been able to review all the concepts that we have learned during the first part of the course. We have treated and analyzed a real time series while applying the techniques that were explained during the lectures.
+
+After putting the series as stationary and finding suitable models, we have had to treat calendar effects and outliers. We have seen that in real time series, we do not always get perfect ARIMA models, as it was the case: the final model did not fulfill all the assumptions of an ARIMA model, but we had to accept it as valid, since we did not have more information about other possible calendar effects or outliers to treat.
+
+However, we have seen that the linearized version of the model (taking into account calendar effects and outliers) performed substantially better when doing predictions.
+
+We conclude that when treating real series, we will not always be able to find the perfect theoretical model, but we still have to find the best one with the information and tools we have.
+
